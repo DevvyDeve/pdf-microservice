@@ -1,6 +1,6 @@
 {
   "name": "pdf-microservice",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "main": "index.js",
   "type": "module",
   "scripts": {
@@ -10,6 +10,7 @@
     "@sparticuz/chromium": "^108.0.3",
     "puppeteer-core": "^21.3.8",
     "express": "^4.18.2",
-    "body-parser": "^1.20.2"
+    "body-parser": "^1.20.2",
+    "node-fetch": "^2.6.7"
   }
 }

@@ -50,24 +50,37 @@ async function generatePdfWithChromium(html, options = {}) {
 }
 
 async function generatePdfWithPdfShift(html, options = {}) {
-  if (!PDFSHIFT_KEY) throw new Error('No PDFSHIFT_KEY configured');
-  const resp = await fetch('https://api.pdfshift.io/v3/convert', {
+  if (!process.env.PDFSHIFT_KEY) throw new Error('No PDFSHIFT_KEY configured');
+
+  const apiUrl = 'https://api.pdfshift.io/v3/convert/pdf'; // <- updated endpoint
+  const payload = {
+    source: html,
+    // PDFShift accepts many options; these are common ones:
+    landscape: (options.orientation === 'landscape') || false,
+    // page size
+    page_size: options.paper || 'A4',
+    // you can add margins if you want:
+    margins: { top: '12mm', bottom: '12mm', left: '12mm', right: '12mm' },
+    // enable print background
+    print_background: true
+  };
+
+  const resp = await fetch(apiUrl, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': 'Bearer ' + PDFSHIFT_KEY
+      // PDFShift uses Bearer token in newer endpoints; if yours needs different auth we'll adjust.
+      'Authorization': 'Bearer ' + process.env.PDFSHIFT_KEY
     },
-    body: JSON.stringify({
-      source: html,
-      landscape: (options.orientation === 'landscape') || false,
-      // pdfshift supports other options; adjust as needed
-    }),
-    timeout: 60000
+    body: JSON.stringify(payload),
+    // node-fetch doesn't support timeout option here; Vercel lambda timeout is in function settings
   });
+
   if (!resp.ok) {
     const text = await resp.text();
     throw new Error('PDFShift error: ' + resp.status + ' ' + text);
   }
+
   const buffer = await resp.arrayBuffer();
   return Buffer.from(buffer);
 }

@@ -1,12 +1,15 @@
+// index.js (replace existing)
 import express from 'express';
 import bodyParser from 'body-parser';
 import chromium from '@sparticuz/chromium';
 import puppeteer from 'puppeteer-core';
+import fetch from 'node-fetch'; // included by default in Node 18+; if not, add to package.json
 
 const app = express();
-app.use(bodyParser.json({ limit: '10mb' }));
+app.use(bodyParser.json({ limit: '12mb' }));
 
 const API_KEY = process.env.MICRO_PDF_KEY || "";
+const PDFSHIFT_KEY = process.env.PDFSHIFT_KEY || "";
 
 app.use((req, res, next) => {
   if (API_KEY) {
@@ -18,50 +21,89 @@ app.use((req, res, next) => {
   next();
 });
 
+async function generatePdfWithChromium(html, options = {}) {
+  const executablePath = await chromium.executablePath;
+  const browser = await puppeteer.launch({
+    args: chromium.args,
+    defaultViewport: chromium.defaultViewport,
+    executablePath,
+    headless: chromium.headless,
+  });
+
+  const page = await browser.newPage();
+  if (options.base_url) {
+    await page.goto(options.base_url, { waitUntil: 'networkidle2' });
+    await page.setContent(html, { waitUntil: 'networkidle0' });
+  } else {
+    await page.setContent(html, { waitUntil: 'networkidle0' });
+  }
+
+  const pdfBuffer = await page.pdf({
+    format: options.paper || 'A4',
+    printBackground: true,
+    landscape: (options.orientation === 'landscape'),
+    margin: { top: '12mm', bottom: '12mm', left: '12mm', right: '12mm' }
+  });
+
+  await browser.close();
+  return pdfBuffer;
+}
+
+async function generatePdfWithPdfShift(html, options = {}) {
+  if (!PDFSHIFT_KEY) throw new Error('No PDFSHIFT_KEY configured');
+  const resp = await fetch('https://api.pdfshift.io/v3/convert', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ' + PDFSHIFT_KEY
+    },
+    body: JSON.stringify({
+      source: html,
+      landscape: (options.orientation === 'landscape') || false,
+      // pdfshift supports other options; adjust as needed
+    }),
+    timeout: 60000
+  });
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error('PDFShift error: ' + resp.status + ' ' + text);
+  }
+  const buffer = await resp.arrayBuffer();
+  return Buffer.from(buffer);
+}
+
 app.post('/api/generate', async (req, res) => {
   try {
     const { html, paper = "A4", orientation = "portrait", base_url = "" } = req.body || {};
     if (!html) return res.status(400).send("Missing html");
 
-    const executablePath = await chromium.executablePath;
-
-    const browser = await puppeteer.launch({
-      args: chromium.args,
-      defaultViewport: chromium.defaultViewport,
-      executablePath,
-      headless: chromium.headless,
-    });
-
-    const page = await browser.newPage();
-
-    if (base_url) {
-      await page.goto(base_url, { waitUntil: "networkidle2" });
-      await page.setContent(html, { waitUntil: "networkidle0" });
-    } else {
-      await page.setContent(html, { waitUntil: "networkidle0" });
+    // Try Chromium first
+    try {
+      const pdfBuffer = await generatePdfWithChromium(html, { paper, orientation, base_url });
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', 'attachment; filename=document.pdf');
+      return res.send(pdfBuffer);
+    } catch (chromErr) {
+      console.warn('Chromium failed, falling back to PDFShift:', chromErr && chromErr.message);
+      // fall through to PDFShift
     }
 
-    const pdf = await page.pdf({
-      format: paper,
-      printBackground: true,
-      landscape: orientation === "landscape",
-      margin: { top: "12mm", bottom: "12mm", left: "12mm", right: "12mm" }
-    });
+    // Fallback: PDFShift
+    try {
+      const pdfBuffer = await generatePdfWithPdfShift(html, { paper, orientation });
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', 'attachment; filename=document.pdf');
+      return res.send(pdfBuffer);
+    } catch (psErr) {
+      console.error('PDFShift fallback failed:', psErr);
+      return res.status(500).send('PDF generation failed: ' + psErr.message);
+    }
 
-    await browser.close();
-
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", "attachment; filename=document.pdf");
-
-    res.send(pdf);
-
-  } catch (error) {
-    console.error("PDF generation error:", error);
-    res.status(500).send("PDF generation error: " + error.message);
+  } catch (err) {
+    console.error('Unhandled PDF generation error:', err);
+    return res.status(500).send('PDF generation error: ' + err.message);
   }
 });
 
 const port = process.env.PORT || 3000;
-app.listen(port, () => {
-  console.log("PDF microservice running on port", port);
-});
+app.listen(port, () => console.log('PDF microservice running on port', port));
